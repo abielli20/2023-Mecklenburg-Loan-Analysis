@@ -1,0 +1,481 @@
+---
+title: "County.Rmd"
+author: "Alessandra Bielli"
+date: "2024-12-09"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+options(scipen = 999)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load the data
+```{r}
+library(readr)
+library(dplyr)
+
+# Load the dataset
+County_Data <- read_csv("County Data Project.csv")
+
+problems(County_Data)
+```
+
+# Data Cleaning and Tranformation 
+## Clean the Column 44
+```{r}
+County_Data <- County_Data %>%
+  mutate(total_units = as.character(total_units))
+```
+
+## Clean the Logical Columns
+```{r}
+County_Data <- County_Data %>%
+  mutate(
+    applicant_race_observed = case_when(
+      applicant_race_observed %in% c(1, "TRUE") ~ TRUE,
+      applicant_race_observed %in% c(0, "FALSE") ~ FALSE,
+      TRUE ~ NA
+    ),
+    `co-applicant_ethnicity-3` = case_when(
+      `co-applicant_ethnicity-3` %in% c(1, "TRUE") ~ TRUE,
+      `co-applicant_ethnicity-3` %in% c(0, "FALSE") ~ FALSE,
+      TRUE ~ NA
+    )
+  )
+
+# Verify the Data
+summary(County_Data)
+problems(County_Data)
+```
+
+## Tranform the Debt-to-Income-Ratio Column
+```{r}
+library(dplyr)
+library(tidyr)
+
+
+County_Data <- County_Data %>%
+  mutate(debt_to_income_ratio_numeric = case_when(
+    debt_to_income_ratio == "<20%" ~ 19,                      
+    debt_to_income_ratio == "20%-<30%" ~ 25,                    
+    debt_to_income_ratio == "30%-<36%" ~ 33,                   
+    debt_to_income_ratio == "50%-60%" ~ 55,                     
+    debt_to_income_ratio == ">60%" ~ 61,                      
+    TRUE ~ NA_real_                                             
+  )) %>%
+  # Remove rows with NA in the debt_to_income_ratio_numeric column
+  drop_na(debt_to_income_ratio_numeric)
+
+# Check the results
+summary(County_Data$debt_to_income_ratio_numeric)
+```
+For this analysis, debt_to_income_ratios <20% will be converted to 19, >60% will be converted to 61, and for the ranges like 20%-<30%, 30%-<36%, and 50%-60%, the midpoint will be used. NA values will be removed.
+
+## Clean the Derived_Race Column
+```{r}
+# Remove specific values from derived_race
+County_Data <- County_Data %>%
+  filter(!derived_race %in% c("Free Form Text Only", "Race Not Available", "Joint"))
+```
+Now, 1 is "2 or more minority races" , 2 is "American Indian or Alaska Native", 3 is "Asian", 4 is "Black or African American", 5 is "Native Hawaiian or Other Pacific Islander", and 6 is White".                                    
+
+## Ensure the Correct Column Types
+```{r}
+county_data_clean <- County_Data %>%
+  mutate(
+    action_taken = as.factor(action_taken),
+    derived_race = as.factor(derived_race),
+    loan_to_value_ratio = as.numeric(loan_to_value_ratio),
+    income = as.numeric(income),
+    applicant_credit_score_type = as.factor(applicant_credit_score_type)
+  )
+```
+
+## Filter columns 
+```{r}
+# Filter the dataset to include only the relevant columns
+county_data_clean <- county_data_clean %>%
+  select(loan_to_value_ratio, income, debt_to_income_ratio_numeric, 
+         applicant_credit_score_type, derived_race, action_taken)
+
+# Drop rows with missing values 
+county_data_clean <- county_data_clean %>%
+  drop_na(income, derived_race, applicant_credit_score_type, loan_to_value_ratio, debt_to_income_ratio_numeric, action_taken)
+
+# Summary of cleaned data
+summary(county_data_clean)
+```
+
+# Fit Linear Regression, Ridge Regression, and PLS Models
+## Check for MultiCollinearity
+```{r}
+# Load required libraries
+library(dplyr)
+library(corrplot)
+library(car)
+
+# View the first few rows of the cleaned data
+head(county_data_clean)
+
+# Ensure that 'county_data_clean' has only numeric columns for correlation
+# Select only numeric columns
+numeric_data <- county_data_clean %>% select(where(is.numeric))
+
+# Compute the correlation matrix, handle missing values
+cor_matrix <- cor(numeric_data, use = "complete.obs")
+
+# Fit the linear model using numeric predictors
+lm_model <- lm(loan_to_value_ratio ~ income + debt_to_income_ratio_numeric + 
+                 applicant_credit_score_type + derived_race + action_taken, 
+               data = county_data_clean)
+
+# Summary of the linear model
+summary(lm_model)
+
+# Calculate Variance Inflation Factor (VIF) to check for multicollinearity
+vif(lm_model)
+```
+The model indicates that income has a small positive effect on loan-to-value ratio (Estimate = 0.00121, p = 0.00569), while debt-to-income ratio has a larger positive effect (Estimate = 0.2679, p < 2e-16). Several credit score types are statistically significant, such as type 8, which reduces the loan-to-value ratio by 10.24 (p < 2e-16), and type 7, which increases it by 3.63 (p = 0.00352). Race categories show substantial negative effects, with Native Hawaiian or Other Pacific Islander reducing the ratio by 27.41 (p = 5.40e-06) and Black or African American by 19.74 (p = 1.77e-08). The low R-squared value of 5.8% indicates the model explains only a small fraction of the variance in the loan-to-value ratio, while acceptable VIF values (all < 1.2) confirm no multicollinearity concerns.
+
+## Check for Normality
+```{r}
+residuals <- lm_model$residuals
+# Residuals vs Fitted plot
+plot(lm_model$fitted.values, residuals)
+abline(h = 0, col = "red")
+# Normality of residuals
+qqnorm(residuals)
+qqline(residuals, col = "red")
+```
+
+# Linear Regression Visualizations
+```{r}
+library(ggplot2)
+
+# Scatter plot with regression line
+ggplot(county_data_clean, aes(x = loan_to_value_ratio, y = income)) +
+  geom_point(alpha = 0.6) +  # Scatter points
+  geom_smooth(method = "lm", col = "blue") +  # Regression line
+  labs(title = "Income vs Loan-to-Value Ratio",
+       x = "Loan-to-Value Ratio",
+       y = "Income") +
+  theme_minimal()
+
+# Box plot to visualize the distribution of income by derived_race
+ggplot(county_data_clean, aes(x = derived_race, y = income, fill = derived_race)) +
+  geom_boxplot(alpha = 0.7) +  # Boxplot with transparency
+  labs(title = "Income Distribution by Race",
+       x = "Race",
+       y = "Income") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_fill_brewer(palette = "Set3") 
+
+# Scatter plot faceted by race
+ggplot(county_data_clean, aes(x = loan_to_value_ratio, y = income)) +
+  geom_point(alpha = 0.6, color = "blue") +  # Scatter points
+  geom_smooth(method = "lm", color = "red") +  # Regression line
+  facet_wrap(~ derived_race, scales = "free") +  # Facet by race
+  labs(
+    title = "Income vs Loan-to-Value Ratio by Race",
+    x = "Loan-to-Value Ratio",
+    y = "Income"
+  ) +
+  theme_minimal()
+```
+
+
+## Split the Data into Training and Testing Sets
+```{r}
+set.seed(123) 
+
+# Split into training (70%) and testing (30%)
+sample_index <- sample(seq_len(nrow(county_data_clean)), size = 0.7 * nrow(county_data_clean))
+train_data <- county_data_clean[sample_index, ]
+test_data <- county_data_clean[-sample_index, ]
+
+# Check dimensions
+dim(train_data)
+dim(test_data)
+```
+
+## Logistic Regression Test
+```{r}
+lm_model <- lm(loan_to_value_ratio ~ income + debt_to_income_ratio_numeric + 
+                 applicant_credit_score_type + derived_race + action_taken, 
+               data = train_data)
+
+# Predict on test data and evaluate
+predictions <- predict(lm_model, newdata = test_data)
+
+# Calculate performance metrics
+mse <- mean((predictions - test_data$loan_to_value_ratio)^2)
+r_squared <- 1 - (sum((predictions - test_data$loan_to_value_ratio)^2) /
+                  sum((test_data$loan_to_value_ratio - mean(test_data$loan_to_value_ratio))^2))
+
+cat("MSE on test data:", mse, "\n")
+cat("R-squared on test data:", r_squared, "\n")
+```
+
+## Ridge Regression Test
+```{r}
+library(glmnet)
+
+# Create matrix of predictors and response variable
+X_train <- model.matrix(loan_to_value_ratio ~ income + debt_to_income_ratio_numeric +
+                          applicant_credit_score_type + derived_race + action_taken, 
+                        data = train_data)[, -1]
+y_train <- train_data$loan_to_value_ratio
+
+# Fit ridge regression with cross-validation
+ridge_model <- cv.glmnet(X_train, y_train, alpha = 0)
+
+# Optimal lambda
+optimal_lambda <- ridge_model$lambda.min
+
+# Coefficients at optimal lambda
+ridge_coefficients <- coef(ridge_model, s = optimal_lambda)
+
+# Print optimal lambda and coefficients
+print(paste("Optimal Lambda: ", optimal_lambda))
+print(ridge_coefficients)
+
+# Evaluate on test data
+X_test <- model.matrix(loan_to_value_ratio ~ income + debt_to_income_ratio_numeric +
+                         applicant_credit_score_type + derived_race + action_taken, 
+                       data = test_data)[, -1]
+ridge_predictions <- predict(ridge_model, newx = X_test, s = optimal_lambda)
+ridge_test_mse <- mean((test_data$loan_to_value_ratio - ridge_predictions)^2)
+ridge_test_mse
+
+summary(test_data$loan_to_value_ratio)
+```
+The optimal lambda for the ridge regression model is 0.549, which helps to shrink the coefficients and reduce overfitting. The model reveals that the intercept is significant with a value of 72.86, while variables like income (0.000995), debt-to-income ratio (0.270), and various credit score types exhibit notable coefficients, indicating their importance in predicting the loan-to-value ratio. For instance, applicant credit score types 4 and 11 show strong positive and negative relationships with the outcome, with values of 11.16 and -13.03, respectively, while some types, such as credit score type 8, show a negative relationship of -9.66. Race categories, particularly "American Indian or Alaska Native" (-9.71) and "Native Hawaiian or Other Pacific Islander" (-14.60), have substantial negative coefficients, suggesting a significant effect on the loan-to-value ratio. The action taken variables, particularly types 7 and 8, show positive associations with the outcome, with coefficients of 10.89 and 15.43, respectively, indicating the model's sensitivity to different actions taken in the loan process.
+
+## Ridge Regression Visualization
+```{r}
+# Extract ridge regression coefficients at optimal lambda
+ridge_coefficients <- coef(ridge_model, s = "lambda.min")
+ridge_coefficients <- as.data.frame(as.matrix(ridge_coefficients))
+ridge_coefficients$Variable <- rownames(ridge_coefficients)
+
+# Rename columns for clarity
+colnames(ridge_coefficients) <- c("Coefficient", "Variable")
+
+# Remove intercept for clarity
+ridge_coefficients <- ridge_coefficients[ridge_coefficients$Variable != "(Intercept)", ]
+
+# Remove rows with missing values
+ridge_coefficients <- ridge_coefficients[!is.na(ridge_coefficients$Coefficient), ]
+
+# Remove irrelevant levels in 'derived_race'
+ridge_coefficients <- ridge_coefficients[!grepl("derived_raceFree Form Text Only|derived_raceRace Not Available|derived_raceJoint", ridge_coefficients$Variable), ]
+
+# Plot ridge regression coefficients
+library(ggplot2)
+ggplot(ridge_coefficients, aes(x = reorder(Variable, Coefficient), y = Coefficient)) +
+  geom_bar(stat = "identity", fill = ifelse(ridge_coefficients$Coefficient > 0, "blue", "red")) + 
+  coord_flip() +  # Flip the coordinates for better readability
+  labs(
+    title = "Ridge Regression Coefficients: Loan-to-Value Ratio",
+    x = "Predictors",
+    y = "Coefficient Value"
+  ) + 
+  theme_minimal()
+```
+
+## PLS Regression
+```{r}
+library(pls)
+
+# Fit PLS model with cross-validation
+pls_model <- plsr(loan_to_value_ratio ~ income + debt_to_income_ratio_numeric + 
+                    applicant_credit_score_type + derived_race + action_taken, 
+                  data = train_data, validation = "CV")
+
+# Print the summary of the PLS model
+summary(pls_model)
+
+# Optimal number of components
+optimal_components <- which.min(pls_model$validation$PRESS)
+
+# Print optimal number of components
+print(paste("Optimal Number of Components: ", optimal_components))
+
+# Predict on test data
+pls_predictions <- predict(pls_model, newdata = test_data, ncomp = optimal_components)
+
+# Extract predicted values (pls_predictions is usually a matrix)
+pls_predictions_vector <- as.vector(pls_predictions)
+
+# Compute the Mean Squared Error of the Test data
+pls_test_mse <- mean((test_data$loan_to_value_ratio - pls_predictions_vector)^2)
+pls_test_mse
+```
+The PLS regression results show that the optimal number of components is 8, as identified by minimizing the RMSEP value during cross-validation. The RMSEP values for the validation set decrease slightly as more components are added, with the lowest value of 26.96 occurring at 8 components, indicating that using additional components beyond 8 does not improve the model significantly. On the training set, the X matrix (predictor variables) explains nearly all the variance (close to 100%) across all components, while the variance explained by the dependent variable, loan_to_value_ratio, starts at 0.003157% for the first component and increases gradually with more components, reaching about 5.52% by the 19th component. The model's performance remains relatively stable after 8 components, with minimal improvements in RMSEP or variance explained, suggesting that 8 components are optimal for predicting the loan-to-value ratio. The test MSE (Mean Squared Error) for the model's predictions is 568.06, which provides an estimate of the prediction error for the chosen model.
+
+## PLS Visualization
+```{r}
+library(ggplot2)
+
+# Create a dataframe for Actual vs Predicted values
+results_df <- data.frame(
+  Actual = test_data$loan_to_value_ratio,
+  Predicted = pls_predictions_vector
+)
+
+# Plot the actual vs predicted values
+library(ggplot2)
+ggplot(results_df, aes(x = Actual, y = Predicted)) +
+  geom_point(color = "blue", alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Actual vs Predicted Loan-to-Value Ratio",
+    x = "Actual Loan-to-Value Ratio",
+    y = "Predicted Loan-to-Value Ratio"
+  ) +
+  theme_minimal()
+```
+
+# Compare the Models' Performance
+## Calculate MSE and R-squared for Each Model
+```{r}
+# Linear Model MSE and R-squared
+lm_predictions <- predict(lm_model, newdata = test_data)
+
+lm_mse <- mean((lm_predictions - test_data$loan_to_value_ratio)^2)
+lm_r2 <- 1 - sum((lm_predictions - test_data$loan_to_value_ratio)^2) / 
+         sum((test_data$loan_to_value_ratio - mean(test_data$loan_to_value_ratio))^2)
+
+# Ridge Model MSE and R-squared
+ridge_mse <- mean((ridge_predictions - test_data$loan_to_value_ratio)^2)
+ridge_r2 <- 1 - sum((ridge_predictions - test_data$loan_to_value_ratio)^2) / 
+            sum((test_data$loan_to_value_ratio - mean(test_data$loan_to_value_ratio))^2)
+
+# PLS Model MSE and R-squared
+pls_mse <- mean((pls_predictions - test_data$loan_to_value_ratio)^2)
+pls_r2 <- 1 - sum((pls_predictions - test_data$loan_to_value_ratio)^2) / 
+          sum((test_data$loan_to_value_ratio - mean(test_data$loan_to_value_ratio))^2)
+
+# Output the results
+cat("Linear Model MSE: ", lm_mse, "\n")
+cat("Ridge Model MSE: ", ridge_mse, "\n")
+cat("PLS Model MSE: ", pls_mse, "\n")
+
+cat("Linear Model R2: ", lm_r2, "\n")
+cat("Ridge Model R2: ", ridge_r2, "\n")
+cat("PLS Model R2: ", pls_r2, "\n")
+```
+
+## MSE Model Comparison
+```{r}
+# Store MSE for each model
+model_comparison <- data.frame(
+  Model = c("Linear Regression", "Ridge Regression", "PLS Regression"),
+  MSE = c(lm_mse, ridge_mse, pls_mse)
+)
+
+# Print comparison
+print(model_comparison)
+
+# Bar plot for MSE comparison
+ggplot(model_comparison, aes(x = Model, y = MSE, fill = Model)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  labs(title = "Model Comparison: MSE for Linear, Ridge, and PLS Regression",
+       x = "Model",
+       y = "Mean Squared Error (MSE)") +
+  theme_minimal() +
+  scale_fill_manual(values = c("skyblue", "lightgreen", "orange"))
+```
+## Actual vs Predicted for all Models
+```{r}
+# Actual vs Predicted for Linear Model
+ggplot() +
+  geom_point(aes(x = test_data$loan_to_value_ratio, y = lm_predictions), color = "blue") +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") + 
+  labs(title = "Actual vs Predicted for Linear Regression",
+       x = "Actual Loan-to-Value Ratio", 
+       y = "Predicted Loan-to-Value Ratio") + 
+  theme_minimal()
+
+# Actual vs Predicted for Ridge Model
+ggplot() +
+  geom_point(aes(x = test_data$loan_to_value_ratio, y = ridge_predictions), color = "green") +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") + 
+  labs(title = "Actual vs Predicted for Ridge Regression",
+       x = "Actual Loan-to-Value Ratio", 
+       y = "Predicted Loan-to-Value Ratio") + 
+  theme_minimal()
+
+# Actual vs Predicted for PLS Model
+ggplot() +
+  geom_point(aes(x = test_data$loan_to_value_ratio, y = pls_predictions), color = "purple") +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") + 
+  labs(title = "Actual vs Predicted for PLS Model",
+       x = "Actual Loan-to-Value Ratio", 
+       y = "Predicted Loan-to-Value Ratio") + 
+  theme_minimal()
+```
+# Perform Cross-Validation
+```{r}
+library(caret)
+library(glmnet)
+library(pls)
+
+# Set up K-Fold Cross Validation (10 folds)
+train_control <- trainControl(method = "cv", number = 10)  
+
+# 1. Linear Regression Model with Cross-Validation
+lm_model_cv <- train(loan_to_value_ratio ~ income + debt_to_income_ratio_numeric + 
+                     applicant_credit_score_type + derived_race + action_taken, 
+                     data = county_data_clean, 
+                     method = "lm",  
+                     trControl = train_control)  
+
+# 2. Ridge Regression Model with Cross-Validation
+ridge_model_cv <- train(loan_to_value_ratio ~ income + debt_to_income_ratio_numeric + 
+                         applicant_credit_score_type + derived_race + action_taken, 
+                         data = county_data_clean, 
+                         method = "glmnet", 
+                         trControl = train_control, 
+                         tuneGrid = expand.grid(alpha = 0, lambda = seq(0.001, 0.1, length = 10)))  # Ridge tuning
+
+# 3. PLS Model with Cross-Validation
+pls_model_cv <- train(loan_to_value_ratio ~ income + debt_to_income_ratio_numeric + 
+                      applicant_credit_score_type + derived_race + action_taken, 
+                      data = county_data_clean, 
+                      method = "pls",  
+                      trControl = train_control, 
+                      tuneGrid = expand.grid(ncomp = 1:10))  
+
+# Output the results for each model
+print("Linear Model Results:")
+print(lm_model_cv)
+print("Ridge Model Results:")
+print(ridge_model_cv)
+print("PLS Model Results:")
+print(pls_model_cv)
+
+# Compare the performance metrics: RMSE, R-squared, etc.
+model_comparison <- data.frame(
+  Model = c("Linear Regression", "Ridge Regression", "PLS Regression"),
+  RMSE = c(min(lm_model_cv$results$RMSE), min(ridge_model_cv$results$RMSE), min(pls_model_cv$results$RMSE)),
+  Rsquared = c(max(lm_model_cv$results$Rsquared), max(ridge_model_cv$results$Rsquared), max(pls_model_cv$results$Rsquared))
+)
+
+# Print Model Comparison
+print(model_comparison)
+
+# Visualize Model Comparison (Bar plot for RMSE)
+library(ggplot2)
+ggplot(model_comparison, aes(x = Model, y = RMSE, fill = Model)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  labs(title = "Model Comparison: RMSE for Linear, Ridge, and PLS Regression",
+       x = "Model",
+       y = "Root Mean Squared Error (RMSE)") +
+  theme_minimal() +
+  scale_fill_manual(values = c("skyblue", "lightgreen", "orange"))
+```
